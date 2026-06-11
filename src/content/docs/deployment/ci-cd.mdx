@@ -1,0 +1,834 @@
+---
+title: CI/CD 流水线
+description: 使用 GitHub Actions 为 TokenFaucet 设置自动化持续集成和部署流水线，包含测试和部署自动化
+---
+
+# CI/CD 流水线
+
+本指南涵盖使用 GitHub Actions 为 TokenFaucet 设置完整的 CI/CD 流水线，包括自动化测试、构建和生产环境部署。
+
+## 概述
+
+我们的 CI/CD 流水线包括：
+- **持续集成**: 自动化测试、代码检查和构建
+- **持续部署**: 自动化部署到预发布和生产环境
+- **质量门控**: 代码质量检查和安全扫描
+- **回滚能力**: 出现问题时快速回滚
+
+## GitHub Actions 工作流
+
+### 1. 基本工作流结构
+
+创建 `.github/workflows/ci-cd.yml`：
+
+```yaml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '18'
+  PNPM_VERSION: '8'
+
+jobs:
+  test:
+    name: 测试和质量检查
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: TokenFaucetrsaas_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 设置 pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: 获取 pnpm 存储目录
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: 设置 pnpm 缓存
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 运行代码检查
+        run: pnpm lint
+
+      - name: 运行类型检查
+        run: pnpm type-check
+
+      - name: 运行单元测试
+        run: pnpm test
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/TokenFaucetrsaas_test
+          REDIS_URL: redis://localhost:6379
+
+      - name: 运行集成测试
+        run: pnpm test:integration
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/TokenFaucetrsaas_test
+          REDIS_URL: redis://localhost:6379
+
+      - name: 构建应用
+        run: pnpm build
+
+      - name: 运行端到端测试
+        run: pnpm test:e2e
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/TokenFaucetrsaas_test
+          REDIS_URL: redis://localhost:6379
+
+  security:
+    name: 安全扫描
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 运行 Trivy 漏洞扫描
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: 上传 Trivy 扫描结果
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: 审计依赖
+        run: pnpm audit
+
+  build:
+    name: 构建 Docker 镜像
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    if: github.ref == 'refs/heads/main'
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录容器注册表
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 提取元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 构建并推送 Docker 镜像
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: 部署到预发布环境
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+
+    steps:
+      - name: 部署到预发布环境
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            cd /opt/TokenFaucetr-saas
+            docker-compose pull
+            docker-compose up -d
+            docker system prune -f
+
+  deploy-production:
+    name: 部署到生产环境
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - name: 部署到生产环境
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            cd /opt/TokenFaucetr-saas
+            docker-compose pull
+            docker-compose up -d
+            docker system prune -f
+
+      - name: 健康检查
+        run: |
+          sleep 30
+          curl -f https://yourdomain.com/health || exit 1
+
+      - name: 通知部署
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+```
+
+### 2. 环境特定工作流
+
+#### 预发布环境部署
+创建 `.github/workflows/staging.yml`：
+
+```yaml
+name: 预发布环境部署
+
+on:
+  push:
+    branches: [ develop ]
+
+jobs:
+  deploy-staging:
+    name: 部署到预发布环境
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: 设置 pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: '8'
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建应用
+        run: pnpm build
+
+      - name: 部署到预发布服务器
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            cd /opt/TokenFaucetr-saas-staging
+            git pull origin develop
+            pnpm install --frozen-lockfile
+            pnpm build
+            pnpm db:migrate
+            sudo systemctl restart TokenFaucetr-saas-staging
+
+      - name: 运行冒烟测试
+        run: |
+          sleep 30
+          curl -f https://staging.yourdomain.com/health || exit 1
+```
+
+#### 生产环境部署
+创建 `.github/workflows/production.yml`：
+
+```yaml
+name: 生产环境部署
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  deploy-production:
+    name: 部署到生产环境
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: 设置 pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: '8'
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建应用
+        run: pnpm build
+
+      - name: 创建部署备份
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            cd /opt/TokenFaucetr-saas
+            tar -czf backup-$(date +%Y%m%d_%H%M%S).tar.gz \
+              --exclude=node_modules \
+              --exclude=.next \
+              --exclude=logs \
+              .
+
+      - name: 部署到生产服务器
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            cd /opt/TokenFaucetr-saas
+            git pull origin main
+            pnpm install --frozen-lockfile
+            pnpm build
+            pnpm db:migrate
+            sudo systemctl restart TokenFaucetr-saas
+
+      - name: 健康检查
+        run: |
+          sleep 30
+          curl -f https://yourdomain.com/health || exit 1
+
+      - name: 通知部署成功
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          text: '生产环境部署成功！🚀'
+```
+
+## 质量门控
+
+### 1. 代码质量检查
+
+创建 `.github/workflows/quality.yml`：
+
+```yaml
+name: 代码质量
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  quality:
+    name: 代码质量检查
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: 设置 pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: '8'
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 运行 ESLint
+        run: pnpm lint
+
+      - name: 运行 Prettier
+        run: pnpm format:check
+
+      - name: 运行 TypeScript 检查
+        run: pnpm type-check
+
+      - name: 运行覆盖率测试
+        run: pnpm test:coverage
+
+      - name: 上传覆盖率到 Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          file: ./coverage/lcov.info
+          flags: unittests
+          name: codecov-umbrella
+
+      - name: SonarCloud 扫描
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+```
+
+### 2. 安全扫描
+
+创建 `.github/workflows/security.yml`：
+
+```yaml
+name: 安全扫描
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * 1' # 每周一凌晨2点
+
+jobs:
+  security:
+    name: 安全扫描
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 运行 Trivy 漏洞扫描
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: 上传 Trivy 扫描结果
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: 依赖审计
+        run: |
+          npm audit --audit-level moderate
+          pnpm audit
+
+      - name: CodeQL 分析
+        uses: github/codeql-action/init@v2
+        with:
+          languages: javascript, typescript
+
+      - name: 执行 CodeQL 分析
+        uses: github/codeql-action/analyze@v2
+```
+
+## 数据库迁移
+
+### 1. 迁移工作流
+
+创建 `.github/workflows/migrations.yml`：
+
+```yaml
+name: 数据库迁移
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'drizzle/**'
+      - 'src/server/db/schema.ts'
+
+jobs:
+  migrate:
+    name: 运行数据库迁移
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: 设置 pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: '8'
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 在生产环境运行迁移
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            cd /opt/TokenFaucetr-saas
+            pnpm db:migrate
+            pnpm db:seed
+```
+
+### 2. 回滚能力
+
+在 `scripts/rollback.sh` 中创建回滚脚本：
+
+```bash
+#!/bin/bash
+
+# TokenFaucet 部署回滚脚本
+set -e
+
+BACKUP_DIR="/opt/backups"
+ROLLBACK_TAG=${1:-"previous"}
+
+echo "开始回滚到 $ROLLBACK_TAG..."
+
+# 停止应用
+sudo systemctl stop TokenFaucetr-saas
+
+# 从备份恢复
+if [ -f "$BACKUP_DIR/backup-$ROLLBACK_TAG.tar.gz" ]; then
+    cd /opt/TokenFaucetr-saas
+    tar -xzf "$BACKUP_DIR/backup-$ROLLBACK_TAG.tar.gz"
+    echo "从备份恢复应用文件"
+else
+    echo "未找到备份文件，通过 git 回滚..."
+    cd /opt/TokenFaucetr-saas
+    git checkout $ROLLBACK_TAG
+    pnpm install --frozen-lockfile
+    pnpm build
+fi
+
+# 如需要，恢复数据库
+if [ -f "$BACKUP_DIR/db-backup-$ROLLBACK_TAG.sql.gz" ]; then
+    echo "恢复数据库备份..."
+    gunzip -c "$BACKUP_DIR/db-backup-$ROLLBACK_TAG.sql.gz" | psql -U TokenFaucetrsaas -d TokenFaucetrsaas_prod
+fi
+
+# 启动应用
+sudo systemctl start TokenFaucetr-saas
+
+# 健康检查
+sleep 30
+if curl -f http://localhost:3000/health > /dev/null 2>&1; then
+    echo "回滚成功！应用运行正常。"
+else
+    echo "回滚失败！应用无响应。"
+    exit 1
+fi
+```
+
+## 监控和通知
+
+### 1. Slack 通知
+
+创建 `.github/workflows/notifications.yml`：
+
+```yaml
+name: 通知
+
+on:
+  workflow_run:
+    workflows: ["CI/CD Pipeline"]
+    types:
+      - completed
+
+jobs:
+  notify:
+    name: 发送通知
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 成功通知
+        if: ${{ github.event.workflow_run.conclusion == 'success' }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          text: |
+            ✅ 部署成功！
+            仓库: ${{ github.repository }}
+            分支: ${{ github.ref }}
+            提交: ${{ github.sha }}
+
+      - name: 失败通知
+        if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          text: |
+            ❌ 部署失败！
+            仓库: ${{ github.repository }}
+            分支: ${{ github.ref }}
+            提交: ${{ github.sha }}
+            请检查日志了解详情。
+```
+
+### 2. 邮件通知
+
+在工作流中配置邮件通知：
+
+```yaml
+- name: 发送邮件通知
+  if: failure()
+  uses: dawidd6/action-send-mail@v3
+  with:
+    server_address: smtp.gmail.com
+    server_port: 465
+    username: ${{ secrets.EMAIL_USERNAME }}
+    password: ${{ secrets.EMAIL_PASSWORD }}
+    subject: '部署失败 - TokenFaucet'
+    body: |
+      部署流水线失败。
+      
+      仓库: ${{ github.repository }}
+      分支: ${{ github.ref }}
+      提交: ${{ github.sha }}
+      
+      请检查 GitHub Actions 日志获取更多详情。
+    to: admin@yourdomain.com
+    from: noreply@yourdomain.com
+```
+
+## 环境配置
+
+### 1. GitHub 密钥
+
+在 GitHub 仓库中配置以下密钥：
+
+#### 生产环境
+- `PRODUCTION_HOST`: 生产服务器 IP/主机名
+- `PRODUCTION_USER`: 生产环境 SSH 用户名
+- `PRODUCTION_SSH_KEY`: 生产环境 SSH 私钥
+- `DATABASE_URL`: 生产数据库连接字符串
+- `TokenFaucetR_AUTH_SECRET`: 生产认证密钥
+- `STRIPE_SECRET_KEY`: 生产 Creem 密钥
+- `CLOUDFLARE_R2_ACCESS_KEY_ID`: 生产 R2 访问密钥
+- `CLOUDFLARE_R2_SECRET_ACCESS_KEY`: 生产 R2 密钥
+
+#### 预发布环境
+- `STAGING_HOST`: 预发布服务器 IP/主机名
+- `STAGING_USER`: 预发布环境 SSH 用户名
+- `STAGING_SSH_KEY`: 预发布环境 SSH 私钥
+
+#### 通知
+- `SLACK_WEBHOOK`: Slack webhook URL
+- `EMAIL_USERNAME`: 邮件通知 SMTP 用户名
+- `EMAIL_PASSWORD`: 邮件通知 SMTP 密码
+
+#### 外部服务
+- `CODECOV_TOKEN`: Codecov 覆盖率报告令牌
+- `SONAR_TOKEN`: SonarCloud 代码质量令牌
+- `GITHUB_TOKEN`: GitHub 令牌（自动提供）
+
+### 2. 环境文件
+
+创建环境特定的配置文件：
+
+#### `.env.staging`
+```
+NODE_ENV=staging
+DATABASE_URL=postgresql://staging_user:password@staging-db:5432/TokenFaucetrsaas_staging
+TokenFaucetR_AUTH_URL=https://staging.yourdomain.com
+STRIPE_SECRET_KEY=sk_test_staging_key
+```
+
+#### `.env.production`
+```
+NODE_ENV=production
+DATABASE_URL=postgresql://prod_user:password@prod-db:5432/TokenFaucetrsaas_prod
+TokenFaucetR_AUTH_URL=https://yourdomain.com
+STRIPE_SECRET_KEY=sk_live_production_key
+```
+
+## 性能优化
+
+### 1. 构建优化
+
+优化构建过程：
+
+```yaml
+- name: 优化构建
+  run: |
+    export NODE_ENV=production
+    export NEXT_TELEMETRY_DISABLED=1
+    pnpm build
+  env:
+    NEXT_TELEMETRY_DISABLED: 1
+```
+
+### 2. 缓存优化
+
+实现智能缓存：
+
+```yaml
+- name: 缓存 node modules
+  uses: actions/cache@v3
+  with:
+    path: ~/.pnpm-store
+    key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+    restore-keys: |
+      ${{ runner.os }}-pnpm-
+
+- name: 缓存 Next.js 构建
+  uses: actions/cache@v3
+  with:
+    path: |
+      ~/.npm
+      ${{ github.workspace }}/.next/cache
+    key: ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+    restore-keys: |
+      ${{ runner.os }}-nextjs-${{ hashFiles('**/pnpm-lock.yaml') }}-
+```
+
+## 故障排除
+
+### 常见问题
+
+1. **构建失败**
+   ```bash
+   # 检查日志
+   cat /var/log/TokenFaucetr-saas/build.log
+   
+   # 验证依赖
+   pnpm install --frozen-lockfile
+   
+   # 清理缓存
+   pnpm store prune
+   ```
+
+2. **部署失败**
+   ```bash
+   # 检查服务状态
+   sudo systemctl status TokenFaucetr-saas
+   
+   # 检查部署日志
+   sudo journalctl -u TokenFaucetr-saas -f
+   
+   # 验证文件权限
+   ls -la /opt/TokenFaucetr-saas
+   ```
+
+3. **数据库迁移问题**
+   ```bash
+   # 检查迁移状态
+   pnpm db:status
+   
+   # 回滚迁移
+   pnpm db:rollback
+   
+   # 重置数据库
+   pnpm db:reset
+   ```
+
+### 调试命令
+
+```bash
+# 检查工作流状态
+gh workflow list
+gh workflow view ci-cd.yml
+
+# 检查部署日志
+ssh user@server 'sudo journalctl -u TokenFaucetr-saas -f'
+
+# 本地测试部署
+docker-compose up -d
+curl -f http://localhost:3000/health
+```
+
+## 最佳实践
+
+1. **分支保护**: 为主分支启用分支保护规则
+2. **必需审查**: 合并前要求代码审查
+3. **状态检查**: 使 CI/CD 检查成为合并的必需条件
+4. **自动化测试**: 保持高测试覆盖率
+5. **安全扫描**: 定期进行安全扫描和依赖更新
+6. **监控**: 监控部署成功和应用健康状态
+7. **回滚策略**: 始终准备好回滚计划
+8. **文档**: 保持部署文档的更新
+
+## 下一步
+
+- 设置 [监控和告警](../development/monitoring)
+- 配置 [错误跟踪](../development/error-tracking)
+- 实施 [性能监控](../development/performance)
+- 查看 [安全最佳实践](../development/security) 

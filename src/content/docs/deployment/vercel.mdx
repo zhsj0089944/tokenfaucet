@@ -1,0 +1,412 @@
+---
+title: Vercel 部署
+---
+通过无缝集成和自动部署，将您的 TokenFaucet 应用程序部署到 Vercel。Vercel 为 Next.js 应用程序提供最佳的开发者体验，无需配置。
+
+## 🚀 快速部署
+
+### 一键部署
+
+部署 TokenFaucet 应用程序的最快方式：
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/your-username/tokenfaucet)
+
+### 手动部署
+
+1. **安装 Vercel CLI**
+   ```bash
+   npm install -g vercel
+   ```
+
+2. **登录到 Vercel**
+   ```bash
+   vercel login
+   ```
+
+3. **从项目目录部署**
+   ```bash
+   vercel
+   ```
+
+4. **按照提示操作**
+   - 设置并部署？ **是**
+   - 选择哪个范围？ **选择您的账户**
+   - 链接到现有项目？ **否**
+   - 您的项目名称是什么？ **tokenfaucet**
+   - 您的代码位于哪个目录？ **./src**
+
+## 🔧 环境变量
+
+在 Vercel 控制面板中配置您的环境变量：
+
+### 必需变量
+
+```bash
+# 应用程序配置
+NEXT_PUBLIC_APP_URL=https://your-domain.vercel.app
+
+# 数据库
+DATABASE_URL=postgresql://username:password@host:5432/database
+
+# 认证
+BETTER_AUTH_SECRET=your-production-secret-key
+
+# 管理员配置
+ADMIN_EMAILS=admin@yourdomain.com
+```
+
+### 可选变量（用于完整功能）
+
+```bash
+# Creem 支付
+CREEM_API_KEY=sk_live_your_creem_secret_key
+CREEM_WEBHOOK_SECRET=whsec_your_webhook_secret
+NEXT_PUBLIC_CREEM_PRICE_PRO_MONTHLY=price_monthly_id
+NEXT_PUBLIC_CREEM_PRICE_PRO_YEARLY=price_yearly_id
+
+# OAuth 提供商
+GITHUB_CLIENT_ID=your-github-client-id
+GITHUB_CLIENT_SECRET=your-github-client-secret
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+
+# 文件存储
+R2_BUCKET_NAME=your-production-bucket
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+R2_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
+R2_PUBLIC_URL=https://your-production-domain.com
+```
+
+### 设置环境变量
+
+1. **通过 Vercel 控制面板：**
+   - 转到项目设置
+   - 导航到"环境变量"
+   - 添加每个变量并选择适当的环境（生产、预览、开发）
+
+2. **通过 Vercel CLI：**
+   ```bash
+   vercel env add NEXT_PUBLIC_APP_URL
+   vercel env add DATABASE_URL
+   vercel env add BETTER_AUTH_SECRET
+   ```
+
+## 🗄️ 数据库设置
+
+### PostgreSQL 数据库
+
+为您的生产数据库选择以下选项之一：
+
+#### 选项 1：外部 PostgreSQL（推荐）
+
+流行的 PostgreSQL 托管选项：
+- **Neon** - [neon.tech](https://neon.tech/)（推荐）
+- **Supabase** - [supabase.com](https://supabase.com/)
+- **PlanetScale** - [planetscale.com](https://planetscale.com/)
+
+登录Neon，创建一个新项目，在项目面板中点击"Connect",复制数据库URL，将数据库URL添加到 .env 文件的`DATABASE_URL`变量中。
+
+
+#### 选项 2：Vercel Postgres
+
+1. **向项目添加 Vercel Postgres：**
+   ```bash
+   vercel postgres create
+   ```
+
+2. **链接到您的项目：**
+   ```bash
+   vercel postgres connect
+   ```
+
+3. **获取连接详细信息：**
+   - `DATABASE_URL` 将自动添加到您的环境变量中
+
+
+### 数据库迁移
+
+设置数据库后，运行迁移：
+
+```bash
+# 生成迁移文件
+pnpm db:generate
+
+# 将迁移应用到生产数据库
+pnpm db:migrate
+```
+
+## 🔄 自动部署
+
+### GitHub 集成
+
+1. **连接您的 GitHub 仓库：**
+   - 转到 Vercel 控制面板
+   - 点击"导入项目"
+   - 选择您的 GitHub 仓库
+   - 配置构建设置
+
+2. **自动部署触发器：**
+   - ✅ **推送到主分支** - 部署到生产环境
+   - ✅ **拉取请求** - 创建预览部署
+   - ✅ **分支部署** - 部署特定分支
+
+### 构建配置
+
+Vercel 自动检测 Next.js 项目。默认配置：
+
+```json
+{
+  "buildCommand": "pnpm build",
+  "devCommand": "pnpm dev",
+  "installCommand": "pnpm install",
+  "outputDirectory": ".next"
+}
+```
+
+### 自定义构建设置
+
+在项目根目录创建 `vercel.json` 进行自定义配置：
+
+```json
+{
+  "framework": "nextjs",
+  "buildCommand": "pnpm build",
+  "devCommand": "pnpm dev",
+  "installCommand": "pnpm install",
+  "functions": {
+    "app/api/**/*.ts": {
+      "maxDuration": 30
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/cleanup",
+      "schedule": "0 2 * * *"
+    }
+  ]
+}
+```
+
+## 🌐 自定义域名
+
+### 添加自定义域名
+
+1. **在 Vercel 控制面板中：**
+   - 转到项目设置
+   - 导航到"域名"
+   - 添加您的自定义域名
+
+2. **DNS 配置：**
+   - 添加指向 `cname.vercel-dns.com` 的 CNAME 记录
+   - 或添加指向 Vercel IP 地址的 A 记录
+
+3. **SSL 证书：**
+   - Vercel 自动提供 SSL 证书
+   - 默认启用 HTTPS
+
+### 域名配置示例
+
+```bash
+# DNS 记录
+CNAME   www     cname.vercel-dns.com
+CNAME   @       cname.vercel-dns.com
+
+# 或 A 记录
+A       @       76.76.19.61
+A       @       76.76.19.62
+```
+
+## 🔐 安全配置
+
+### 环境特定设置
+
+```bash
+# 生产环境变量
+NODE_ENV=production
+NEXT_PUBLIC_APP_URL=https://yourdomain.com
+
+# 安全头（由 Vercel 自动处理）
+# - X-Frame-Options
+# - X-Content-Type-Options
+# - X-XSS-Protection
+# - Strict-Transport-Security
+```
+
+### Webhook 安全
+
+对于 Creem webhooks，在您的 Creem 控制面板中配置端点：
+
+```
+Webhook URL: https://yourdomain.com/api/webhooks/creem
+Events: customer.subscription.created, customer.subscription.updated, invoice.payment_succeeded
+```
+
+## 📊 监控和分析
+
+### Vercel Analytics
+
+启用 Vercel Analytics 进行性能监控：
+
+1. **安装 Vercel Analytics：**
+   ```bash
+   pnpm add @vercel/analytics
+   ```
+
+2. **添加到您的布局：**
+   ```tsx
+   import { Analytics } from '@vercel/analytics/react'
+   
+   export default function RootLayout({
+     children,
+   }: {
+     children: React.ReactNode
+   }) {
+     return (
+       <html>
+         <body>
+           {children}
+           <Analytics />
+         </body>
+       </html>
+     )
+   }
+   ```
+
+### 速度洞察
+
+启用速度洞察以获取性能指标：
+
+```bash
+pnpm add @vercel/speed-insights
+```
+
+```tsx
+import { SpeedInsights } from '@vercel/speed-insights/next'
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html>
+      <body>
+        {children}
+        <SpeedInsights />
+      </body>
+    </html>
+  )
+}
+```
+
+## 🚨 故障排除
+
+### 常见问题
+
+#### 构建失败
+
+**问题：** 构建因依赖错误而失败
+```bash
+# 解决方案：清除缓存并重新安装
+vercel --force
+```
+
+#### 环境变量未加载
+
+**问题：** 环境变量在生产中未定义
+```bash
+# 检查环境变量
+vercel env ls
+
+# 本地拉取环境变量
+vercel env pull .env.local
+```
+
+#### 数据库连接问题
+
+**问题：** 无法连接到数据库
+```bash
+# 验证 DATABASE_URL 格式
+postgresql://username:password@host:5432/database
+
+# 本地测试连接
+psql $DATABASE_URL
+```
+
+#### 函数超时
+
+**问题：** API 路由在 10 秒后超时
+```json
+// vercel.json
+{
+  "functions": {
+    "app/api/**/*.ts": {
+      "maxDuration": 30
+    }
+  }
+}
+```
+
+### 性能优化
+
+#### Edge Runtime
+
+使用 Edge Runtime 获得更快的响应时间：
+
+```typescript
+// app/api/example/route.ts
+export const runtime = 'edge'
+
+export async function GET() {
+  return Response.json({ message: 'Hello from Edge Runtime!' })
+}
+```
+
+#### 静态生成
+
+优化静态页面以获得更好的性能：
+
+```typescript
+// app/page.tsx
+export const revalidate = 3600 // 每小时重新验证
+
+export default function HomePage() {
+  return <div>您的内容</div>
+}
+```
+
+## 🎯 最佳实践
+
+### 部署检查清单
+
+在部署到生产环境之前：
+
+- [ ] **环境变量** 已配置
+- [ ] **数据库** 已设置并迁移
+- [ ] **域名** 已配置 SSL
+- [ ] **Webhooks** 已为外部服务配置
+- [ ] **分析** 和监控已启用
+- [ ] **错误跟踪** 已配置
+- [ ] **性能** 已优化
+
+### 安全最佳实践
+
+- ✅ 为 `BETTER_AUTH_SECRET` 使用强密钥
+- ✅ 为 API 路由正确配置 CORS
+- ✅ 为所有外部 webhooks 使用 HTTPS
+- ✅ 定期轮换 API 密钥和密码
+- ✅ 监控安全漏洞
+- ✅ 使用环境特定配置
+
+### 性能最佳实践
+
+- ✅ 尽可能启用 Edge Runtime
+- ✅ 为静态内容使用静态生成
+- ✅ 使用 Next.js Image 组件优化图像
+- ✅ 实施适当的缓存策略
+- ✅ 监控核心 Web 指标
+- ✅ 使用 Vercel Analytics 获得洞察
+
+
+**恭喜！** 您的 TokenFaucet 应用程序现已在 Vercel 上线。监控您的应用程序性能并随着用户群的增长进行扩展。

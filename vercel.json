@@ -1,0 +1,33 @@
+{
+	"$schema": "https://openapi.vercel.sh/vercel.json",
+	"crons": [
+		{
+			"path": "/api/points/daily-grant",
+			"schedule": "0 0 * * *"
+		},
+		{
+			"path": "/api/invitation/grant-rewards",
+			"schedule": "0 0 * * *"
+		},
+		{
+			"path": "/api/cron/backup",
+			"schedule": "0 2 * * *"
+		},
+		{
+			"path": "/api/admin/membership-expiration",
+			"schedule": "0 1 * * *"
+		},
+		{
+			"path": "/api/admin/membership-expiration-reminder",
+			"schedule": "0 9 * * *"
+		},
+		{
+			"path": "/api/admin/cleanup",
+			"schedule": "0 3 * * 0"
+		},
+		{
+			"path": "/api/cron/subscription-check",
+			"schedule": "0 8 * * *"
+		}
+	]
+}

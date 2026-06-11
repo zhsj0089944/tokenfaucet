@@ -1,0 +1,73 @@
+# Dependencies
+node_modules
+
+# Build outputs
+.next
+out
+dist
+build
+.cache
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# TypeScript
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test
+coverage
+.nyc_output
+*.lcov
+
+# Misc
+*.bak
+*.tmp
+*.temp
+
+# Database
+*.db
+*.db-journal
+
+# Docker
+docker-compose.override.yml
+
+# Vite
+vite.config.ts.timestamp-*
+vite.config.ts.timestamp
+
+# Turborepo
+.turbo
+
+# Rollup
+*.rollup.cache
+
+# AI工具配置
+.codebuddy/
+.workbuddy/
+
+# 测试日志
+.playwright-cli/
+
+# 部署脚本（含敏感信息）
+scripts/deploy-creem.sh
+
+# 内部文档
+internal-docs/
